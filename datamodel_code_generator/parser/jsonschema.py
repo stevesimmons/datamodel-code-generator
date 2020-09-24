@@ -42,6 +42,7 @@ json_schema_data_formats: Dict[str, Dict[str, Types]] = {
         'double': Types.double,
         'decimal': Types.decimal,
         'time': Types.time,
+        'int': Types.integer,
         'default': Types.number,
     },
     'string': {
@@ -71,6 +72,8 @@ json_schema_data_formats: Dict[str, Dict[str, Types]] = {
     'null': {'default': Types.null},
 }
 
+#json_schema_data_formats['int'] = json_schema_data_formats['integer']
+    
 
 class JsonSchemaObject(BaseModel):
     items: Union[List['JsonSchemaObject'], 'JsonSchemaObject', None]
@@ -174,13 +177,18 @@ class JsonSchemaParser(Parser):
             types = [obj.type]
             format_ = obj.format or 'default'
 
-        return [
-            self.data_model_type.get_data_type(
-                json_schema_data_formats[t][format_],
-                **obj.dict() if not self.field_constraints else {},
-            )
-            for t in types
-        ]
+        try:
+            res = [
+                self.data_model_type.get_data_type(
+                    json_schema_data_formats[t][format_],
+                    **obj.dict() if not self.field_constraints else {},
+                )
+                for t in types
+            ]
+        except KeyError:
+            print(f"KeyError with types={types} and format_={format_}")
+            raise
+        return res
 
     def set_additional_properties(self, name: str, obj: JsonSchemaObject) -> None:
         if not obj.additionalProperties:

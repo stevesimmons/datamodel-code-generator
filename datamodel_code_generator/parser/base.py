@@ -88,8 +88,41 @@ def sort_data_models(
     if require_update_action_models is None:
         require_update_action_models = []
 
+    # Reduce recursions by putting plurals of a model immediately after
+    try:
+        raise ImportError
+        import toposort
+        names_original = [model.name for model in unsorted_data_models]
+        models_by_name = {model.name: model for model in unsorted_data_models}
+        names_and_refs = {model.name: set(model.reference_classes) for model in unsorted_data_models}
+        names_ordered = toposort.toposort_flatten(names_and_refs)
+        unsorted_data_models = [models_by_name[name] for name in names_ordered]
+    except ImportError:
+        pass
+
+    
+    # Find minimal set of classes to remove to break circular references
+    # We can ignore these when doing the topological sort.
+    import collections
+    import operator
+    import networkx as nx
+    edges = [(model.name, ref) for model in unsorted_data_models for ref in model.reference_classes if ref not in sorted_data_models]
+    G = nx.DiGraph(edges)
+    models_causing_circular_references = set()
+    cycles = sorted(nx.simple_cycles(G), key=len)
+    while cycles:
+        shortest = (c for c in cycles if len(c) == len(cycles[0]))
+        node_counter = collections.Counter(n for c in shortest for n in c)
+        node_to_remove = sorted(node_counter.items(), key=operator.itemgetter(1, 0))[-1][0]
+        G.remove_node(node_to_remove)
+        models_causing_circular_references.add(node_to_remove)
+        cycles = sorted(nx.simple_cycles(G), key=len)
+    if models_causing_circular_references:
+        print(f"These models cause circular references: {models_causing_circular_references}")
+    
     unresolved_references: List[DataModel] = []
     for model in unsorted_data_models:
+        # We should have seen all reference_classes before
         if not model.reference_classes:
             sorted_data_models[model.name] = model
         elif (
@@ -98,24 +131,50 @@ def sort_data_models(
             sorted_data_models[model.name] = model
             require_update_action_models.append(model.name)
         elif (
-            not set(model.reference_classes) - {model.name} - set(sorted_data_models)
+            not set(model.reference_classes) - {model.name} - set(sorted_data_models) - models_causing_circular_references
         ):  # reference classes have been resolved
             sorted_data_models[model.name] = model
-            if model.name in model.reference_classes:
+            if model.name in model.reference_classes or model.name in models_causing_circular_references:
                 require_update_action_models.append(model.name)
         else:
             unresolved_references.append(model)
+
+    #unresolved_references, unresolved = [], unresolved_references
+    #for model in unresolved:
+    #    if model.name in models_causing_circular_references:
+    #        sorted_data_models[model.name] = model
+    #        require_update_action_models.append(model.name)
+    #    else:
+    #        unresolved_references.append(model)
+            
     if unresolved_references:
         try:
             return sort_data_models(
                 unresolved_references, sorted_data_models, require_update_action_models
             )
         except RecursionError:
-            unresolved_classes = ', '.join(
-                f"[class: {item.name} references: {item.reference_classes}]"
-                for item in unresolved_references
+            # Give diagnostics of why models were left unresolved
+            unresolved_classes = '\n'.join(
+                f"- class: {item.name} references: {item.reference_classes}"
+                for item in sorted(unresolved_references, key=lambda item: item.name)
             )
-            raise Exception(f'A Parser can not resolve classes: {unresolved_classes}.')
+            resolved_classes = '\n'.join(
+                f"-class {name}"
+                for name in sorted(sorted_data_models)
+            )
+            print(f"""Parser hit RecursionError with {len(unresolved_references)} classes unresolved:
+{unresolved_classes}
+These were resolved:
+{resolved_classes}
+""")            
+            if True:
+                # Don't give up: pretend everything is ok so the resulting source file can be checked by a human 
+                print("Pretending that the unresolved ones were resolved, so that processing can continue.")
+                for item in unresolved_references:
+                    sorted_data_models[item.name] = item
+                unresolved_references = []
+            else:
+                raise Exception(f'A Parser can not resolve classes:\n{unresolved_classes}.')
     return unresolved_references, sorted_data_models, require_update_action_models
 
 
